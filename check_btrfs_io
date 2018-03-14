@@ -1,0 +1,176 @@
+#!/bin/ksh93
+
+# NRPE plugin for checking io errors on btrfs
+#
+# Copyright (C) 2018  Benjamin Cooke <bcooke@freedomofknowledge.org>
+# 
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+
+
+DEPS='btrfs dc df getopt grep lsblk printf sed sudo tr'
+
+NAGIOS_OK=0
+NAGIOS_WARN=1
+NAGIOS_CRIT=2
+NAGIOS_UNKN=3
+
+readonly DEPS NAGIOS_OK NAGIOS_WARN NAGIOS_CRIT NAGIOS_UNKN
+
+errThreshold=25
+fs=''
+fsAlias=''
+
+
+init_cmds() {
+
+	for cmd in $DEPS; do
+	
+		for prefix in '/usr/local' '/usr' ''; do
+			for bindir in 'sbin' 'bin'; do
+				if [ -f "$prefix/$bindir/$cmd" ]; then
+					eval $cmd="$prefix/$bindir/$cmd"
+				fi
+			done
+		done
+
+		if [ ! -f "$(eval echo \$$cmd)" ]; then
+			echo "Missing dependency: $cmd" 1>&2
+			exit $NAGIOS_UNKN
+		fi
+
+	done
+
+}
+
+
+_usage() {
+
+	$printf '\nUsage: %s [options] [-m <mountpoint> | -d <device>]\n' "$0"
+	$printf '\nOptions:\n'
+	$printf '\t-t\tAmount of errors to be tolerated\n'
+	$printf '\n'
+
+}
+
+usage() {
+	_usage 1>&2
+}
+
+
+init_cmds
+
+
+args=$( $getopt -o h?::d:m:t: -n "$0" -- "$@" )
+eval set -- "$args"
+
+while [ "$1" != '--' ]; do
+
+	option=$1
+	shift
+
+	case "$option" in
+
+		-d)
+			if [ -n "$fs" ]; then
+				$printf 'Error: More than one btrfs filesystem specified.\n'
+				exit $NAGIOS_UNKN
+			elif [ ! -b "$1" ]; then
+				$printf 'Error: "%s" is not a block device\n' "$1"
+				exit $NAGIOS_UNKN
+			elif $lsblk -o FSTYPE "$1" |$sed -n '2p'| $grep -v '^btrfs$' >/dev/null
+			then
+				$printf 'Error: %s is not a btrfs partition\n' "$1"
+				exit $NAGIOS_UNKN
+			else
+				fs="$1"
+				fsAlias="$1"
+				shift
+			fi
+			;;
+
+		-m)
+			if [ -n "$fs" ]; then
+				$printf 'Error: More than one btrfs filesystem specified.\n'
+				exit $NAGIOS_UNKN
+			elif [ ! -d "$1" ]; then
+				$printf 'Error: "%s" is not a valid mountpoint\n' "$1"
+				exit $NAGIOS_UNKN
+			elif $df --output=fstype "$1" |$sed -n '2p'| $grep -v '^btrfs$' >/dev/null
+			then
+				$printf 'Error: %s is not mounted as btrfs.\n' "$1"
+				exit $NAGIOS_UNKN
+			else
+				fs="$(\
+					$sudo $btrfs fi show "$1" |
+					$sed -n 's/.*path \(\/dev\/[a-z0-9]\+$\)/\1/p'|
+					$tr '\n' '|'
+				)"
+				fsAlias=$1
+				shift
+			fi
+			;;
+
+		-t)
+			if echo "$1" | $grep '^[0-9]\+$' >/dev/null; then
+				errThreshold="$1"
+				shift
+			else
+				$printf 'Error: "%s" is not numeric.\n' "$1"
+				exit $NAGIOS_UNKN
+			fi
+			;;
+
+		-? | -h | *)
+			usage
+			exit $NAGIOS_UNKN
+			;;
+
+	esac
+
+done
+
+if [ -z "$fs" ]; then
+	usage
+	exit $NAGIOS_UNKN
+fi
+
+
+errCount=0
+
+IFS='|'
+for device in $fs; do
+	unset IFS
+
+	$sudo -g disk $btrfs dev stats $device |
+	$sed -n 's/.* \([0-9]\+\)$/\1/p' |
+	while read n; do
+		errCount=$( $printf '%s %s + pq\n' "$errCount" "$n" | $dc )
+	done
+
+	IFS='|'
+done
+unset IFS
+
+
+if [ "$errCount" -eq "0" ]; then
+	$printf '%s -- OK\n' "$fsAlias"
+	exit $NAGIOS_OK
+elif [ "$errCount" -le "$errThreshold" ]; then
+	$printf 'WARNING %s -- %s errors found\n' "$fsAlias" "$errCount"
+	exit $NAGIOS_WARN
+else
+	$printf 'CRITICAL %s -- %s errors found\n' "$fsAlias" "$errCount"
+	exit $NAGIOS_CRIT
+fi

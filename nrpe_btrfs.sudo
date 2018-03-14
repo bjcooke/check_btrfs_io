@@ -1,0 +1,17 @@
+## Place this file in /etc/sudoers.d/
+
+Cmnd_Alias 	BTRFS_STATS =\
+	/usr/sbin/btrfs dev stats *,\
+	/sbin/btrfs dev stats *,\
+	! /usr/sbin/btrfs dev stats -z *,\
+	! /sbin/btrfs dev stats -z *,\
+	! /usr/sbin/btrfs dev stats * -z,\
+	! /sbin/btrfs dev stats * -z
+
+Cmnd_Alias	BTRFS_SHOW =\
+	/usr/sbin/btrfs fi show *,\
+	/sbin/btrfs fi show *
+
+
+nrpe	ALL=(:disk)	NOPASSWD: BTRFS_STATS
+nrpe	ALL=(root)	NOPASSWD: BTRFS_SHOW
