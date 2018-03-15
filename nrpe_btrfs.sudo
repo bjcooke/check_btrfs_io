@@ -12,6 +12,8 @@ Cmnd_Alias	BTRFS_SHOW =\
 	/usr/sbin/btrfs fi show *,\
 	/sbin/btrfs fi show *
 
+Defaults:nrpe	!requiretty
+
 
 nrpe	ALL=(:disk)	NOPASSWD: BTRFS_STATS
 nrpe	ALL=(root)	NOPASSWD: BTRFS_SHOW
